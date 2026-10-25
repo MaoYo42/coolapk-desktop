@@ -93,6 +93,20 @@ async function invokeNative(tauriCmd: string, tauriArgs: any = {}, options: Nati
   }
 }
 
+/**
+ * 评论接口同样受网易易盾风控保护（`/v6/feed/replyList` 与详情同级别）。
+ *
+ * 验证凭证由原生层保存后对所有后续请求复用，因此这里只在首次被拦时弹一次验证并重试一次；
+ * 评论接口没有下发自定义字段的通道，只支持 `validate` Cookie 协议。
+ */
+async function withCaptchaRetry<T>(run: () => Promise<T>, error: unknown): Promise<T> {
+  const captchaParams = extractCaptchaParamsFromError(error);
+  if (!captchaParams || captchaParams.captchaField !== '') throw error;
+  const postToken = await verifyWithCaptcha(captchaParams.captchaId);
+  await invoke('set_captcha_validate', { validate: postToken });
+  return await run();
+}
+
 export class CoolapkTauriAPI {
   // 1. 首页推荐
   static async getIndexV8Feeds(page: number = 1) {
@@ -489,7 +503,7 @@ export class CoolapkTauriAPI {
       fromFeedAuthor?: number;
     } = {},
   ) {
-    return await invokeNative('get_feed_replies', {
+    const run = () => invokeNative('get_feed_replies', {
       feedId,
       page,
       firstItem: options.firstItem || '',
@@ -497,6 +511,11 @@ export class CoolapkTauriAPI {
       listType: options.listType ?? 'lastupdate_desc',
       fromFeedAuthor: options.fromFeedAuthor ?? 0,
     }, { retry: false, kind: 'comment' });
+    try {
+      return await run();
+    } catch (error) {
+      return await withCaptchaRetry(run, error);
+    }
   }
 
   // 评论列表不包含完整设备信息，详情接口用于后台补齐评论元数据。
@@ -515,12 +534,17 @@ export class CoolapkTauriAPI {
     // APK 的楼中楼详情使用同一个 feed/replyList；父评论 ID 作为 id，
     // 原生命令固定使用 feedType=feed_reply，并按 lastItem 游标翻页。
     // 不走旧的 Python /feed/replies 路径，也不在失败时切换其他接口。
-    return await invokeNative('get_sub_replies', {
+    const run = () => invokeNative('get_sub_replies', {
       feedId,
       replyId,
       page,
       lastItem: options.lastItem || '',
     }, { retry: false, kind: 'comment' });
+    try {
+      return await run();
+    } catch (error) {
+      return await withCaptchaRetry(run, error);
+    }
   }
 
   static async getFeedDetail(feedId: string) {
@@ -539,7 +563,14 @@ export class CoolapkTauriAPI {
         try {
           // 验证码加载失败或用户取消时仍进入网页兜底；验证成功后只重试一次。
           const postToken = await verifyWithCaptcha(captchaParams.captchaId);
-          primaryResponse = await requestDetail(postToken, captchaParams.captchaField);
+          // captchaField 为空串表示服务端只认 validate Cookie：凭证交给原生层保存，
+          // 详情和后续评论分页都会自动复用，不能再拼成 _v2_post_token 参数。
+          if (captchaParams.captchaField === '') {
+            await invoke('set_captcha_validate', { validate: postToken });
+            primaryResponse = await requestDetail();
+          } else {
+            primaryResponse = await requestDetail(postToken, captchaParams.captchaField);
+          }
           const primaryMessage = getFeedDetailMessage(primaryResponse?.data);
           if (primaryMessage && !hasFeedMoreSuffix(primaryMessage)) return primaryResponse;
         } catch (retryError) {

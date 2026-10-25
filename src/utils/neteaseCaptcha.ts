@@ -35,6 +35,28 @@ export interface NECaptchaInstance {
 /** 酷安官方网易易盾 Captcha ID */
 export const DEFAULT_COOLAPK_CAPTCHA_ID = '414e5c9b866a03db03f860a1a9101672';
 
+/** 旧版协议：验证凭证作为 `_v2_post_token` 参数下发。 */
+export const LEGACY_CAPTCHA_FIELD = '_v2_post_token';
+
+/**
+ * 归一化服务端下发的 `captchaField`。
+ *
+ * 关键区别：**空串是有意义的**。服务端现在返回 `captchaField: ""`，
+ * 表示只接受 `validate` Cookie；此时再往 query/form 里塞 `_v2_post_token`
+ * 会被服务端直接忽略，请求会一直停留在“当前访问需要验证码”。
+ * 只有字段完全缺失时，才退回旧版表单字段。
+ */
+function normalizeCaptchaField(field: unknown): string {
+  if (typeof field !== 'string') return LEGACY_CAPTCHA_FIELD;
+  const trimmed = field.trim();
+  if (trimmed === '') return '';
+  return /^_[A-Za-z0-9_]{1,63}$/.test(trimmed) ? trimmed : LEGACY_CAPTCHA_FIELD;
+}
+
+function normalizeCaptchaId(id: unknown): string | undefined {
+  return typeof id === 'string' && /^[A-Za-z0-9]{16,64}$/.test(id) ? id : undefined;
+}
+
 /**
  * 从酷安服务端响应中解析动态下发的 Captcha 配置（对应 APK C2143.java / wn.java）
  */
@@ -44,8 +66,8 @@ export function extractCaptchaParamsFromResponse(data: any): { captchaId?: strin
   if (!extraStr && typeof data === 'object') {
     if (data.captchaId) {
       return {
-        captchaId: data.captchaId,
-        captchaField: data.captchaField || '_v2_post_token',
+        captchaId: normalizeCaptchaId(data.captchaId),
+        captchaField: normalizeCaptchaField(data.captchaField),
       };
     }
   }
@@ -54,8 +76,8 @@ export function extractCaptchaParamsFromResponse(data: any): { captchaId?: strin
       const obj = JSON.parse(extraStr);
       if (obj.captchaId) {
         return {
-          captchaId: obj.captchaId,
-          captchaField: obj.captchaField || '_v2_post_token',
+          captchaId: normalizeCaptchaId(obj.captchaId),
+          captchaField: normalizeCaptchaField(obj.captchaField),
         };
       }
     } catch (e) {
@@ -73,10 +95,13 @@ export function extractCaptchaParamsFromError(error: unknown): { captchaId: stri
   }
   if (!response || typeof response !== 'object') return null;
   const params = extractCaptchaParamsFromResponse(response);
-  if (params?.captchaId) return { captchaId: params.captchaId, captchaField: params.captchaField || '_v2_post_token' };
+  if (params?.captchaId) {
+    return { captchaId: params.captchaId, captchaField: params.captchaField ?? LEGACY_CAPTCHA_FIELD };
+  }
   const reason = [response.messageStatus, response.message, response.error].filter((value) => typeof value === 'string').join(' ');
   if (Number(response.code) === 403 && /(captcha|验证码)/i.test(reason)) {
-    return { captchaId: DEFAULT_COOLAPK_CAPTCHA_ID, captchaField: '_v2_post_token' };
+    // 拿不到服务端配置时按当前协议走 Cookie，避免又退回到被忽略的 query 参数。
+    return { captchaId: DEFAULT_COOLAPK_CAPTCHA_ID, captchaField: '' };
   }
   return null;
 }

@@ -81,7 +81,8 @@ describe('CoolapkTauriAPI 内容新页接口封装', () => {
 
     await expect(CoolapkTauriAPI.getFeedDetail('456')).resolves.toEqual(okResponse({ message: '网页完整正文' }));
     expect(invoke).toHaveBeenLastCalledWith('fetch_external_page', { url: 'https://www.coolapk.com/feed/456' });
-    expect(invoke).toHaveBeenCalledTimes(failure === 'retry' ? 3 : 2);
+    // retry 分支多一次 set_captcha_validate（凭证交给原生层保存后再重试详情）。
+    expect(invoke).toHaveBeenCalledTimes(failure === 'retry' ? 4 : 2);
   });
 
   it('验证码和网页兜底都失败后释放全文请求，允许同帖再次展开', async () => {
@@ -104,11 +105,38 @@ describe('CoolapkTauriAPI 内容新页接口封装', () => {
     expect(invoke).toHaveBeenCalledWith('get_public_feed_detail', { feedId: '123' });
   });
 
-  it('详情接口触发验证码后带令牌重试一次', async () => {
+  it('captchaField 为空串时走 validate Cookie 并重试一次', async () => {
     (window as any).initNECaptcha = vi.fn((config) => {
       config.onVerify?.(null, { validate: 'validated' });
     });
-    vi.mocked(invoke).mockRejectedValueOnce(JSON.stringify({ code: 403, messageStatus: 'err_request_captcha_v2' })).mockResolvedValueOnce(okResponse({ message: '完整正文' }));
+    const captchaId = '5fc4c10eccd64d178982bc560da43a91';
+    vi.mocked(invoke)
+      .mockRejectedValueOnce(JSON.stringify({
+        code: 403,
+        messageStatus: 'err_request_captcha_v2',
+        messageExtra: JSON.stringify({ captchaId, captchaField: '' }),
+      }))
+      .mockResolvedValueOnce(okResponse({}))
+      .mockResolvedValueOnce(okResponse({ message: '完整正文' }));
+
+    await expect(CoolapkTauriAPI.getFeedDetail('456')).resolves.toEqual(okResponse({ message: '完整正文' }));
+    expect(invoke).toHaveBeenNthCalledWith(1, 'get_feed_detail', { feedId: '456' });
+    // 凭证交给原生层保存，重试请求不再拼 _v2_post_token（服务端会忽略它）。
+    expect(invoke).toHaveBeenNthCalledWith(2, 'set_captcha_validate', { validate: 'NEC:5fc4c10e:validated' });
+    expect(invoke).toHaveBeenNthCalledWith(3, 'get_feed_detail', { feedId: '456' });
+  });
+
+  it('服务端下发字段名时按字段重试，不改走 Cookie', async () => {
+    (window as any).initNECaptcha = vi.fn((config) => {
+      config.onVerify?.(null, { validate: 'validated' });
+    });
+    vi.mocked(invoke)
+      .mockRejectedValueOnce(JSON.stringify({
+        code: 403,
+        messageStatus: 'err_request_captcha_v2',
+        messageExtra: JSON.stringify({ captchaId: '414e5c9b866a03db03f860a1a9101672', captchaField: '_v2_post_token' }),
+      }))
+      .mockResolvedValueOnce(okResponse({ message: '完整正文' }));
 
     await expect(CoolapkTauriAPI.getFeedDetail('456')).resolves.toEqual(okResponse({ message: '完整正文' }));
     expect(invoke).toHaveBeenNthCalledWith(1, 'get_feed_detail', { feedId: '456' });

@@ -1055,6 +1055,15 @@ pub async fn get_public_feed_detail(state: State<'_, AppState>, feed_id: String)
     state.client.get_public_feed_detail(&feed_id).await
 }
 
+/// 保存/清除网易易盾人机验证凭证。
+///
+/// 服务端在 `captchaField` 为空串时只接受 `validate` Cookie，
+/// 前端验证成功后通过该命令交给原生请求层，后续详情与评论分页自动携带。
+#[tauri::command]
+pub fn set_captcha_validate(state: State<'_, AppState>, validate: Option<String>) {
+    state.client.set_captcha_validate(validate);
+}
+
 #[tauri::command]
 pub async fn get_editable_feed(state: State<'_, AppState>, feed_id: String) -> Result<Value, String> {
     state.client.get_editable_feed(&feed_id).await

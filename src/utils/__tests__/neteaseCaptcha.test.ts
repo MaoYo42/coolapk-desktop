@@ -23,8 +23,33 @@ describe('neteaseCaptcha', () => {
   });
 
   it('解析仅返回 403 的验证码响应，且不误判普通 403', () => {
-    expect(extractCaptchaParamsFromError(JSON.stringify({ code: 403, messageStatus: 'err_request_captcha_v2' }))).toEqual({ captchaId: DEFAULT_COOLAPK_CAPTCHA_ID, captchaField: '_v2_post_token' });
+    // 拿不到 captchaField 时按当前协议走 validate Cookie（空串），
+    // 否则会退回到服务端已忽略的 _v2_post_token 参数。
+    expect(extractCaptchaParamsFromError(JSON.stringify({ code: 403, messageStatus: 'err_request_captcha_v2' }))).toEqual({ captchaId: DEFAULT_COOLAPK_CAPTCHA_ID, captchaField: '' });
     expect(extractCaptchaParamsFromError(JSON.stringify({ code: 403, message: '无权访问' }))).toBeNull();
+  });
+
+  it('空 captchaField 保留 Cookie 协议语义，缺失才退回旧版参数', () => {
+    const blank = extractCaptchaParamsFromError(JSON.stringify({
+      code: 403,
+      messageStatus: 'err_request_captcha_v2',
+      messageExtra: JSON.stringify({ captchaId: '0123456789abcdef0123456789abcdef', captchaField: '' }),
+    }));
+    expect(blank).toEqual({ captchaId: '0123456789abcdef0123456789abcdef', captchaField: '' });
+
+    const named = extractCaptchaParamsFromError(JSON.stringify({
+      code: 403,
+      messageStatus: 'err_request_captcha_v2',
+      messageExtra: JSON.stringify({ captchaId: '0123456789abcdef0123456789abcdef', captchaField: '_custom_token' }),
+    }));
+    expect(named).toEqual({ captchaId: '0123456789abcdef0123456789abcdef', captchaField: '_custom_token' });
+
+    const legacy = extractCaptchaParamsFromError(JSON.stringify({
+      code: 403,
+      messageStatus: 'err_request_captcha_v2',
+      messageExtra: JSON.stringify({ captchaId: '0123456789abcdef0123456789abcdef' }),
+    }));
+    expect(legacy).toEqual({ captchaId: '0123456789abcdef0123456789abcdef', captchaField: '_v2_post_token' });
   });
 
   it('loads the script tag into DOM', async () => {
