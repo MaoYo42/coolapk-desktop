@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "酷安",
-  "version": "1.35.1",
+  "version": "1.35.2",
   "identifier": "com.coolapk.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -51,7 +51,7 @@
     ],
     "macOS": {
       "signingIdentity": "-",
-      "bundleVersion": "135.19.99"
+      "bundleVersion": "135.29.99"
     },
     "windows": {
       "nsis": {
@@ -67,10 +67,10 @@
       }
     },
     "android": {
-      "versionCode": 135001999
+      "versionCode": 135002999
     },
     "iOS": {
-      "bundleVersion": "135.19.99"
+      "bundleVersion": "135.29.99"
     }
   }
 }
