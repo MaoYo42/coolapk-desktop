@@ -9316,6 +9316,27 @@ fn application_failure(value: &Value) -> Option<(i64, &'static str)> {
     Some((code, reason))
 }
 
+/// 403 且响应体为空是酷安边缘节点的拦截特征：请求在到达业务层之前就被丢弃。
+/// 这种情况下客户端无论重试、重新登录还是换设备码都不会恢复，只有更换出口 IP 才有效，
+/// 因此必须把它和「接口返回的业务错误」区分开，否则用户只会看到一句无从下手的 403。
+/// 措辞刻意避开「网络/连接/超时」等字样：前端 `shouldRetryRequest` 会据此判定可重试，
+/// 而对已限流的出口反复重试只会延长限制。
+const EGRESS_BLOCKED_HINT: &str =
+    "酷安边缘节点拦截了当前出口 IP（请求未到达业务层），请关闭代理/VPN 或改用国内线路后重试";
+
+fn api_failure_message(status: reqwest::StatusCode, body: &str) -> String {
+    let empty_body = body.trim().is_empty();
+    let detail: String = if empty_body {
+        "empty response body".to_string()
+    } else {
+        body.chars().take(300).collect()
+    };
+    if status.as_u16() == 403 && empty_body {
+        return format!("Coolapk API returned HTTP {status}: {detail}｜{EGRESS_BLOCKED_HINT}");
+    }
+    format!("Coolapk API returned HTTP {status}: {detail}")
+}
+
 async fn response_json(response: reqwest::Response) -> Result<Value, String> {
     let status = response.status();
     let body = response
@@ -9324,15 +9345,34 @@ async fn response_json(response: reqwest::Response) -> Result<Value, String> {
         .map_err(|e| format!("failed to read Coolapk response: {e}"))?;
 
     if !status.is_success() {
-        let detail = if body.trim().is_empty() {
-            "empty response body".to_string()
-        } else {
-            body.chars().take(300).collect()
-        };
-        return Err(format!("Coolapk API returned HTTP {status}: {detail}"));
+        return Err(api_failure_message(status, &body));
     }
 
     serde_json::from_str(&body).map_err(|e| format!("invalid Coolapk JSON response: {e}"))
+}
+
+#[cfg(test)]
+mod api_failure_message_tests {
+    use super::{api_failure_message, EGRESS_BLOCKED_HINT};
+    use reqwest::StatusCode;
+
+    #[test]
+    fn empty_403_carries_actionable_network_hint() {
+        let message = api_failure_message(StatusCode::FORBIDDEN, "  ");
+        assert!(message.contains("empty response body"));
+        assert!(message.contains(EGRESS_BLOCKED_HINT));
+    }
+
+    #[test]
+    fn other_failures_stay_undecorated() {
+        // 有响应体说明已经到达业务层，属于接口自身错误，不应提示换网络。
+        let with_body = api_failure_message(StatusCode::FORBIDDEN, r#"{"message":"无权访问"}"#);
+        assert!(with_body.contains("无权访问"));
+        assert!(!with_body.contains(EGRESS_BLOCKED_HINT));
+
+        let server_error = api_failure_message(StatusCode::BAD_GATEWAY, "");
+        assert!(!server_error.contains(EGRESS_BLOCKED_HINT));
+    }
 }
 
 #[cfg(test)]
